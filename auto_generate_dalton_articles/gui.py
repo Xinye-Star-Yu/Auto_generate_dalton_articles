@@ -33,7 +33,6 @@ class SchedulerGui(tk.Tk):
         self.article_count_var = tk.StringVar()
         self.new_doi_var = tk.StringVar()
         self.new_date_var = tk.StringVar(value=date.today().isoformat())
-        self.new_user_var = tk.StringVar(value="xinye.star.yu@gmail.com")
         self.doi_rows: list[dict[str, str]] = []
 
         self._build_ui()
@@ -98,23 +97,19 @@ class SchedulerGui(tk.Tk):
         add_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 0))
         add_frame.columnconfigure(1, weight=3)
         add_frame.columnconfigure(3, weight=1)
-        add_frame.columnconfigure(5, weight=2)
         ttk.Label(add_frame, text="DOI").grid(row=0, column=0, sticky="w")
         ttk.Entry(add_frame, textvariable=self.new_doi_var).grid(row=0, column=1, sticky="ew", padx=(6, 12))
         ttk.Label(add_frame, text="Date").grid(row=0, column=2, sticky="w")
         ttk.Entry(add_frame, textvariable=self.new_date_var, width=12).grid(row=0, column=3, sticky="ew", padx=(6, 12))
-        ttk.Label(add_frame, text="User").grid(row=0, column=4, sticky="w")
-        ttk.Entry(add_frame, textvariable=self.new_user_var).grid(row=0, column=5, sticky="ew", padx=(6, 12))
         self.add_doi_button = ttk.Button(add_frame, text="Add Row", command=self._add_doi_row)
-        self.add_doi_button.grid(row=0, column=6, sticky="e")
+        self.add_doi_button.grid(row=0, column=4, sticky="e")
 
-        columns = ("doi_norm", "date", "user")
+        columns = ("doi_norm", "date")
         self.doi_tree = ttk.Treeview(doi_frame, columns=columns, show="headings")
         for column in columns:
             self.doi_tree.heading(column, text=column)
         self.doi_tree.column("doi_norm", width=360, minwidth=240, stretch=True)
         self.doi_tree.column("date", width=120, minwidth=90, stretch=False)
-        self.doi_tree.column("user", width=220, minwidth=160, stretch=True)
         self.doi_tree.grid(row=2, column=0, sticky="nsew", padx=(10, 0), pady=10)
 
         doi_y_scrollbar = ttk.Scrollbar(doi_frame, orient="vertical", command=self.doi_tree.yview)
@@ -295,7 +290,7 @@ class SchedulerGui(tk.Tk):
             return
 
         try:
-            with open(csv_path, newline="", encoding="utf-8") as csv_file:
+            with open(csv_path, newline="", encoding="utf-8-sig") as csv_file:
                 rows = list(csv.DictReader(csv_file))
         except Exception as exc:
             self.doi_status_var.set(f"Could not read DOI history: {exc}")
@@ -305,7 +300,6 @@ class SchedulerGui(tk.Tk):
             {
                 "doi_norm": row.get("doi_norm", ""),
                 "date": row.get("date", ""),
-                "user": row.get("user", ""),
             }
             for row in rows
         ]
@@ -317,7 +311,6 @@ class SchedulerGui(tk.Tk):
                 values=(
                     row.get("doi_norm", ""),
                     row.get("date", ""),
-                    row.get("user", ""),
                 ),
             )
         self.doi_status_var.set(f"Loaded {len(rows)} DOI row(s) from {csv_path.name}.")
@@ -325,7 +318,7 @@ class SchedulerGui(tk.Tk):
     def _write_doi_rows(self, rows: list[dict[str, str]]) -> None:
         csv_path = article_scheduler.duplication_csv_path()
         with open(csv_path, "w", newline="", encoding="utf-8") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=["doi_norm", "date", "user"])
+            writer = csv.DictWriter(csv_file, fieldnames=["doi_norm", "date"])
             writer.writeheader()
             writer.writerows(rows)
         self._refresh_doi_csv()
@@ -333,7 +326,6 @@ class SchedulerGui(tk.Tk):
     def _add_doi_row(self) -> None:
         doi = self.new_doi_var.get().strip().lower()
         row_date = self.new_date_var.get().strip() or date.today().isoformat()
-        user = self.new_user_var.get().strip()
 
         if not doi:
             messagebox.showerror("Missing DOI", "Enter a DOI before adding a row.")
@@ -348,7 +340,7 @@ class SchedulerGui(tk.Tk):
                 return
 
         rows = list(self.doi_rows)
-        rows.append({"doi_norm": doi, "date": row_date, "user": user})
+        rows.append({"doi_norm": doi, "date": row_date})
         try:
             self._write_doi_rows(rows)
         except Exception as exc:

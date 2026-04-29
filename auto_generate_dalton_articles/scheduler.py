@@ -9,6 +9,7 @@ actually due based on the requested day interval.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import platform
 import re
@@ -69,7 +70,36 @@ def ensure_runtime_file(filename: str) -> Path:
 
 
 def duplication_csv_path() -> Path:
-    return ensure_runtime_file("Duplication_Check_Dalton.csv")
+    path = ensure_runtime_file("Duplication_Check_Dalton.csv")
+    normalize_duplication_csv(path)
+    return path
+
+
+def normalize_duplication_csv(path: Path) -> None:
+    """Keep the DOI history CSV limited to doi_norm,date columns."""
+    if not path.exists():
+        with open(path, "w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["doi_norm", "date"])
+        return
+
+    with open(path, newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        rows = [
+            {
+                "doi_norm": (row.get("doi_norm") or "").strip(),
+                "date": (row.get("date") or "").strip(),
+            }
+            for row in reader
+            if (row.get("doi_norm") or "").strip()
+        ]
+        if reader.fieldnames == ["doi_norm", "date"]:
+            return
+
+    with open(path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=["doi_norm", "date"])
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _now() -> datetime:

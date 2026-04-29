@@ -53,6 +53,36 @@ ensure_runtime_file("Duplication_Check_Dalton.csv")
 ensure_runtime_file("template_output.pdf")
 TEMPLATE_PDF = find_template_pdf()
 DUP_CSV = BASE_DIR / "Duplication_Check_Dalton.csv"
+
+
+def normalize_duplication_csv() -> None:
+    """Keep the DOI history CSV limited to doi_norm,date columns."""
+    if not DUP_CSV.exists():
+        with open(DUP_CSV, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["doi_norm", "date"])
+        return
+
+    with open(DUP_CSV, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        rows = [
+            {
+                "doi_norm": (row.get("doi_norm") or "").strip(),
+                "date": (row.get("date") or "").strip(),
+            }
+            for row in reader
+            if (row.get("doi_norm") or "").strip()
+        ]
+        if reader.fieldnames == ["doi_norm", "date"]:
+            return
+
+    with open(DUP_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["doi_norm", "date"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+normalize_duplication_csv()
 NOTE_SECTION_HTML = """<section aria-labelledby="note">
  <h2 id="note">Note</h2>
  <p>
@@ -146,7 +176,7 @@ def load_used_dois():
     """Load already-used DOIs from the duplication check CSV."""
     dois = set()
     if DUP_CSV.exists():
-        with open(DUP_CSV, newline="", encoding="utf-8") as f:
+        with open(DUP_CSV, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 dois.add(row["doi_norm"].strip().lower())
@@ -878,7 +908,7 @@ def main():
                         fa.write("\n")
         with open(DUP_CSV, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow([selected_doi, today, "xinye.star.yu@gmail.com"])
+            writer.writerow([selected_doi, today])
         print(f"\nAppended DOI to duplication check: {selected_doi}")
     elif selected_doi is None:
         print("\nWARNING: Could not extract a valid DOI from output. Check results manually.")
