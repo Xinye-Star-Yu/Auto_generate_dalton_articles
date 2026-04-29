@@ -7,22 +7,50 @@ Usage:
 """
 
 import csv
+import shutil
 import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+
+def app_base_dir() -> Path:
+    """Directory used for writable runtime files and article outputs."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def resource_base_dir() -> Path:
+    """Directory used for bundled read-only files in a PyInstaller build."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", app_base_dir()))
+    return app_base_dir()
+
+
+BASE_DIR = app_base_dir()
+RESOURCE_DIR = resource_base_dir()
+
+
+def ensure_runtime_file(filename: str) -> Path:
+    target = BASE_DIR / filename
+    source = RESOURCE_DIR / filename
+    if not target.exists() and source.exists() and source != target:
+        shutil.copy2(source, target)
+    return target
 
 
 def find_template_pdf() -> Path:
     for filename in ("template_article.pdf", "template_output.pdf"):
-        candidate = BASE_DIR / filename
-        if candidate.exists():
-            return candidate
+        for directory in (BASE_DIR, RESOURCE_DIR):
+            candidate = directory / filename
+            if candidate.exists():
+                return candidate
     return BASE_DIR / "template_article.pdf"
 
 
+ensure_runtime_file("Duplication_Check_Dalton.csv")
+ensure_runtime_file("template_output.pdf")
 TEMPLATE_PDF = find_template_pdf()
 DUP_CSV = BASE_DIR / "Duplication_Check_Dalton.csv"
 NOTE_SECTION_HTML = """<section aria-labelledby="note">

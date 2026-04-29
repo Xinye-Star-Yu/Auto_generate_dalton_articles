@@ -18,7 +18,15 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Callable, Iterable
 
-BASE_DIR = Path(__file__).resolve().parent
+
+def app_base_dir() -> Path:
+    """Directory used for writable runtime files and article outputs."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = app_base_dir()
 CONFIG_PATH = BASE_DIR / "scheduler_config.json"
 LOG_PATH = BASE_DIR / "scheduler.log"
 GENERATOR_PATH = BASE_DIR / "generate.py"
@@ -165,10 +173,14 @@ def iter_process_lines(process: subprocess.Popen) -> Iterable[str]:
 
 
 def run_generation(callback: LogCallback | None = None) -> tuple[int, str | None]:
-    if not GENERATOR_PATH.exists():
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--generate-now"]
+    else:
+        command = [sys.executable, str(GENERATOR_PATH)]
+
+    if not getattr(sys, "frozen", False) and not GENERATOR_PATH.exists():
         raise FileNotFoundError(f"Cannot find generator script: {GENERATOR_PATH}")
 
-    command = [sys.executable, str(GENERATOR_PATH)]
     emit(f"Starting article generation with: {' '.join(command)}", callback)
 
     output_dir = None
@@ -239,6 +251,8 @@ def run_due_generation(callback: LogCallback | None = None) -> bool:
 
 
 def build_task_command() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --run-due'
     return f'"{sys.executable}" "{Path(__file__).resolve()}" --run-due'
 
 

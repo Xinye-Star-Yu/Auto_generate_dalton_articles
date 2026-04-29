@@ -8,6 +8,7 @@ Run with:
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -189,6 +190,14 @@ class SchedulerGui(tk.Tk):
 
 
 def main() -> None:
+    if "--generate-now" in sys.argv[1:]:
+        import generate
+
+        raise SystemExit(generate.main() or 0)
+
+    if len(sys.argv) > 1:
+        raise SystemExit(article_scheduler.main(sys.argv[1:]))
+
     app = SchedulerGui()
     app.mainloop()
 

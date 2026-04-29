@@ -220,3 +220,5 @@ __marimo__/
 # Auto Generate Dalton Articles local state
 scheduler_config.json
 20??-??-??-*/
+build/
+dist/
