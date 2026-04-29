@@ -24,11 +24,12 @@ class SchedulerGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Article Scheduler")
-        self.minsize(620, 420)
+        self.minsize(720, 420)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
         self.interval_var = tk.StringVar()
+        self.article_count_var = tk.StringVar()
 
         self._build_ui()
         self._load_config()
@@ -40,18 +41,22 @@ class SchedulerGui(tk.Tk):
 
         controls = ttk.Frame(self)
         controls.grid(row=0, column=0, sticky="ew", padx=12, pady=12)
-        controls.columnconfigure(4, weight=1)
+        controls.columnconfigure(6, weight=1)
 
-        ttk.Label(controls, text="Run every").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Articles").grid(row=0, column=0, sticky="w")
+        amount = ttk.Spinbox(controls, from_=1, to=25, textvariable=self.article_count_var, width=8)
+        amount.grid(row=0, column=1, sticky="w", padx=(8, 16))
+
+        ttk.Label(controls, text="Repeat every").grid(row=0, column=2, sticky="w")
         interval = ttk.Spinbox(controls, from_=0, to=365, textvariable=self.interval_var, width=8)
-        interval.grid(row=0, column=1, sticky="w", padx=(8, 6))
-        ttk.Label(controls, text="days").grid(row=0, column=2, sticky="w", padx=(0, 16))
+        interval.grid(row=0, column=3, sticky="w", padx=(8, 6))
+        ttk.Label(controls, text="days").grid(row=0, column=4, sticky="w", padx=(0, 16))
 
         self.start_button = ttk.Button(controls, text="Start", command=self.start_schedule)
-        self.start_button.grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        self.start_button.grid(row=0, column=5, sticky="ew", padx=(0, 8))
 
         self.stop_button = ttk.Button(controls, text="Stop", command=self.stop_schedule)
-        self.stop_button.grid(row=0, column=4, sticky="w")
+        self.stop_button.grid(row=0, column=6, sticky="w")
 
         log_frame = ttk.LabelFrame(self, text="Logs")
         log_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -68,7 +73,11 @@ class SchedulerGui(tk.Tk):
     def _load_config(self) -> None:
         config = article_scheduler.load_config()
         self.interval_var.set(str(config["interval_days"]))
-        self._append_log(f"Loaded schedule: every {config['interval_days']} day(s).")
+        self.article_count_var.set(str(config.get("articles_per_run", 1)))
+        self._append_log(
+            f"Loaded schedule: {config.get('articles_per_run', 1)} article(s) "
+            f"every {config['interval_days']} day(s)."
+        )
         self._append_log(f"Last status: {config.get('last_status') or 'Never run'}")
         if config.get("next_run_at"):
             self._append_log(f"Next run: {config['next_run_at']}")
@@ -83,6 +92,15 @@ class SchedulerGui(tk.Tk):
             raise ValueError("Days must be 0 or greater.")
         return interval_days
 
+    def _get_article_count(self) -> int:
+        try:
+            article_count = int(self.article_count_var.get())
+        except ValueError as exc:
+            raise ValueError("Articles must be a whole number.") from exc
+        if article_count < 1:
+            raise ValueError("Articles must be at least 1.")
+        return article_count
+
     def _run_time(self) -> str:
         config = article_scheduler.load_config()
         run_time = str(config.get("run_time") or DEFAULT_RUN_TIME)
@@ -95,30 +113,49 @@ class SchedulerGui(tk.Tk):
     def start_schedule(self) -> None:
         try:
             interval_days = self._get_interval_days()
+            article_count = self._get_article_count()
         except Exception as exc:
-            messagebox.showerror("Invalid Days", str(exc))
+            messagebox.showerror("Invalid Settings", str(exc))
             return
 
         def work() -> None:
             run_time = self._run_time()
             if interval_days == 0:
-                result = article_scheduler.install_os_schedule(0, run_time)
+                result = article_scheduler.install_os_schedule(
+                    0,
+                    run_time,
+                    articles_per_run=article_count,
+                )
                 output = (result.stdout or result.stderr or "").strip()
                 self.log_queue.put(output)
-                self.log_queue.put("Starting one-time article generation now.")
-                return_code, _ = article_scheduler.run_manual_generation(self.log_queue.put)
+                self.log_queue.put(f"Starting one-time generation for {article_count} article(s).")
+                return_code, _ = article_scheduler.run_manual_generation(
+                    self.log_queue.put,
+                    article_count=article_count,
+                )
                 self.log_queue.put(f"One-time run finished with exit code {return_code}.")
                 return
 
             immediate_run_at = datetime.now().replace(microsecond=0)
-            result = article_scheduler.install_os_schedule(interval_days, run_time, immediate_run_at)
+            result = article_scheduler.install_os_schedule(
+                interval_days,
+                run_time,
+                immediate_run_at,
+                articles_per_run=article_count,
+            )
             output = (result.stdout or result.stderr or "").strip()
             self.log_queue.put(output or f"Scheduler started with exit code {result.returncode}.")
             config = article_scheduler.load_config()
-            self.log_queue.put(f"Running every {config['interval_days']} day(s).")
+            self.log_queue.put(
+                f"Running {config['articles_per_run']} article(s) every "
+                f"{config['interval_days']} day(s)."
+            )
             self.log_queue.put(f"Next run: {config['next_run_at']}")
-            self.log_queue.put("Starting article generation now.")
-            return_code, _ = article_scheduler.run_manual_generation(self.log_queue.put)
+            self.log_queue.put(f"Starting immediate generation for {article_count} article(s).")
+            return_code, _ = article_scheduler.run_manual_generation(
+                self.log_queue.put,
+                article_count=article_count,
+            )
             self.log_queue.put(f"Immediate run finished with exit code {return_code}.")
 
         self._start_worker(work)

@@ -37,11 +37,13 @@ CRON_END = "# END AutoGenerateArticleScheduler"
 DEFAULT_CONFIG = {
     "enabled": True,
     "interval_days": 7,
+    "articles_per_run": 1,
     "run_time": "09:00",
     "next_run_at": None,
     "last_run_at": None,
     "last_status": "Never run",
     "last_output_dir": None,
+    "last_output_dirs": [],
 }
 
 
@@ -78,6 +80,7 @@ def load_config() -> dict:
             saved = json.load(config_file)
         config.update(saved)
     config["interval_days"] = max(0, int(config["interval_days"]))
+    config["articles_per_run"] = max(1, int(config.get("articles_per_run", 1)))
     if config["interval_days"] == 0:
         config["enabled"] = False
         config["next_run_at"] = None
@@ -90,6 +93,7 @@ def save_config(config: dict) -> dict:
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config)
     normalized["interval_days"] = max(0, int(normalized["interval_days"]))
+    normalized["articles_per_run"] = max(1, int(normalized.get("articles_per_run", 1)))
     parse_run_time(normalized["run_time"])
     if normalized["interval_days"] == 0:
         normalized["enabled"] = False
@@ -119,23 +123,29 @@ def next_run_after_immediate_run(reference: datetime, interval_days: int, run_ti
 def update_schedule(
     interval_days: int,
     run_time: str,
+    articles_per_run: int = 1,
     enabled: bool = True,
     immediate_run_at: datetime | None = None,
 ) -> dict:
     now = _now()
     interval = max(0, int(interval_days))
+    article_count = max(1, int(articles_per_run))
     if interval == 0:
         config = load_config()
         config.update(
             {
                 "enabled": False,
                 "interval_days": 0,
+                "articles_per_run": article_count,
                 "run_time": run_time.strip(),
                 "next_run_at": None,
             }
         )
         save_config(config)
-        append_log("One-time run configured; no recurring schedule will be installed.")
+        append_log(
+            f"One-time run configured for {article_count} article(s); "
+            "no recurring schedule will be installed."
+        )
         return config
 
     if immediate_run_at is not None:
@@ -148,13 +158,15 @@ def update_schedule(
         {
             "enabled": enabled,
             "interval_days": interval,
+            "articles_per_run": article_count,
             "run_time": run_time.strip(),
             "next_run_at": candidate.isoformat(),
         }
     )
     save_config(config)
     append_log(
-        f"Schedule saved: every {config['interval_days']} day(s) at {config['run_time']}; "
+        f"Schedule saved: {config['articles_per_run']} article(s) every "
+        f"{config['interval_days']} day(s) at {config['run_time']}; "
         f"next run {config['next_run_at']}"
     )
     return config
@@ -205,25 +217,65 @@ def run_generation(callback: LogCallback | None = None) -> tuple[int, str | None
     return return_code, output_dir
 
 
-def run_manual_generation(callback: LogCallback | None = None) -> tuple[int, str | None]:
+def run_generation_batch(
+    article_count: int,
+    callback: LogCallback | None = None,
+) -> tuple[int, list[str]]:
+    count = max(1, int(article_count))
+    output_dirs: list[str] = []
+    failures = 0
+    first_failure_code = 0
+
+    for index in range(count):
+        if count > 1:
+            emit(f"Starting article {index + 1} of {count}.", callback)
+        return_code, output_dir = run_generation(callback)
+        if output_dir:
+            output_dirs.append(output_dir)
+        if return_code != 0:
+            failures += 1
+            if first_failure_code == 0:
+                first_failure_code = return_code
+
+    if failures:
+        emit(f"Batch finished with {count - failures}/{count} article(s) successful.", callback)
+        return first_failure_code or 1, output_dirs
+
+    emit(f"Batch finished successfully: {count}/{count} article(s).", callback)
+    return 0, output_dirs
+
+
+def batch_status(return_code: int, article_count: int) -> str:
+    count = max(1, int(article_count))
+    if return_code == 0:
+        return f"Success ({count}/{count} articles)"
+    return f"Failed with exit code {return_code}"
+
+
+def run_manual_generation(
+    callback: LogCallback | None = None,
+    article_count: int = 1,
+) -> tuple[int, list[str]]:
     started_at = _now()
-    return_code, output_dir = run_generation(callback)
+    return_code, output_dirs = run_generation_batch(article_count, callback)
     config = load_config()
     config.update(
         {
             "last_run_at": started_at.isoformat(),
-            "last_status": "Success" if return_code == 0 else f"Failed with exit code {return_code}",
-            "last_output_dir": output_dir,
+            "last_status": batch_status(return_code, article_count),
+            "last_output_dir": output_dirs[-1] if output_dirs else None,
+            "last_output_dirs": output_dirs,
         }
     )
     save_config(config)
-    return return_code, output_dir
+    return return_code, output_dirs
 
 
 def run_due_generation(callback: LogCallback | None = None) -> bool:
     config = load_config()
     now = _now()
     next_run_at = parse_datetime(config.get("next_run_at"))
+    article_count = max(1, int(config.get("articles_per_run", 1)))
 
     if not config.get("enabled", True):
         emit("Scheduler is disabled; no article generated.", callback)
@@ -233,15 +285,15 @@ def run_due_generation(callback: LogCallback | None = None) -> bool:
         emit(f"No article due. Next run is {next_run_at.isoformat(sep=' ', timespec='minutes')}.", callback)
         return False
 
-    emit("Schedule is due; launching article generation.", callback)
-    return_code, output_dir = run_generation(callback)
+    emit(f"Schedule is due; launching {article_count} article(s).", callback)
+    return_code, output_dirs = run_generation_batch(article_count, callback)
 
-    status = "Success" if return_code == 0 else f"Failed with exit code {return_code}"
     config.update(
         {
             "last_run_at": now.isoformat(),
-            "last_status": status,
-            "last_output_dir": output_dir,
+            "last_status": batch_status(return_code, article_count),
+            "last_output_dir": output_dirs[-1] if output_dirs else None,
+            "last_output_dirs": output_dirs,
             "next_run_at": next_run_after(now, config["interval_days"], config["run_time"]).isoformat(),
         }
     )
@@ -317,9 +369,10 @@ def install_os_schedule(
     interval_days: int,
     run_time: str,
     immediate_run_at: datetime | None = None,
+    articles_per_run: int = 1,
 ) -> subprocess.CompletedProcess:
     if int(interval_days) <= 0:
-        update_schedule(0, run_time, enabled=False)
+        update_schedule(0, run_time, articles_per_run=articles_per_run, enabled=False)
         if platform.system().lower().startswith("win"):
             remove_windows_task()
         else:
@@ -333,7 +386,13 @@ def install_os_schedule(
         append_log(result.stdout.strip())
         return result
 
-    update_schedule(interval_days, run_time, enabled=True, immediate_run_at=immediate_run_at)
+    update_schedule(
+        interval_days,
+        run_time,
+        articles_per_run=articles_per_run,
+        enabled=True,
+        immediate_run_at=immediate_run_at,
+    )
     if platform.system().lower().startswith("win"):
         result = install_windows_task(run_time)
     else:
@@ -362,6 +421,7 @@ def format_status(config: dict | None = None) -> str:
     fields = [
         f"Enabled: {config.get('enabled')}",
         f"Interval days: {config.get('interval_days')}",
+        f"Articles per run: {config.get('articles_per_run')}",
         f"Run time: {config.get('run_time')}",
         f"Next run: {config.get('next_run_at')}",
         f"Last run: {config.get('last_run_at') or 'Never'}",
@@ -380,20 +440,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--remove", action="store_true", help="Remove the OS scheduled task or cron entry.")
     parser.add_argument("--status", action="store_true", help="Print saved schedule status.")
     parser.add_argument("--interval-days", type=int, default=None, help="Number of days between generated articles.")
+    parser.add_argument("--article-count", type=int, default=None, help="Number of articles to generate per run.")
     parser.add_argument("--run-time", default=None, help="Daily check time in HH:MM 24-hour format.")
     args = parser.parse_args(argv)
 
-    if args.interval_days is not None or args.run_time is not None:
+    if args.interval_days is not None or args.run_time is not None or args.article_count is not None:
         config = load_config()
         update_schedule(
             args.interval_days if args.interval_days is not None else int(config["interval_days"]),
             args.run_time if args.run_time is not None else str(config["run_time"]),
+            articles_per_run=(
+                args.article_count if args.article_count is not None else int(config["articles_per_run"])
+            ),
             enabled=bool(config.get("enabled", True)),
         )
 
     if args.install:
         config = load_config()
-        result = install_os_schedule(int(config["interval_days"]), str(config["run_time"]))
+        result = install_os_schedule(
+            int(config["interval_days"]),
+            str(config["run_time"]),
+            articles_per_run=int(config["articles_per_run"]),
+        )
         print(result.stdout or result.stderr, end="")
         return result.returncode
 
@@ -403,7 +471,9 @@ def main(argv: list[str] | None = None) -> int:
         return result.returncode
 
     if args.run_now:
-        return_code, _ = run_manual_generation(print)
+        config = load_config()
+        article_count = args.article_count if args.article_count is not None else int(config["articles_per_run"])
+        return_code, _ = run_manual_generation(print, article_count=article_count)
         return return_code
 
     if args.run_due:
