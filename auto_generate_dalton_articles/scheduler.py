@@ -46,8 +46,8 @@ CRON_BEGIN = "# BEGIN AutoGenerateArticleScheduler"
 CRON_END = "# END AutoGenerateArticleScheduler"
 
 DEFAULT_CONFIG = {
-    "enabled": True,
-    "interval_days": 7,
+    "enabled": False,
+    "interval_days": 1,
     "articles_per_run": 1,
     "run_time": "09:00",
     "next_run_at": None,
