@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Auto Generate Dalton Articles local state
+scheduler_config.json
+20??-??-??-*/
