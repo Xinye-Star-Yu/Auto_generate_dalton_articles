@@ -60,9 +60,6 @@ class SchedulerGui(tk.Tk):
         self.start_button = ttk.Button(controls, text="Start", command=self.start_schedule)
         self.start_button.grid(row=0, column=5, sticky="ew", padx=(0, 8))
 
-        self.stop_button = ttk.Button(controls, text="Stop", command=self.stop_schedule)
-        self.stop_button.grid(row=0, column=6, sticky="w")
-
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
 
@@ -210,18 +207,9 @@ class SchedulerGui(tk.Tk):
 
         self._start_worker(work)
 
-    def stop_schedule(self) -> None:
-        def work() -> None:
-            result = article_scheduler.remove_os_schedule()
-            output = (result.stdout or result.stderr or "").strip()
-            self.log_queue.put(output or f"Scheduler stopped with exit code {result.returncode}.")
-
-        self._start_worker(work)
-
     def _set_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
         self.start_button.configure(state=state)
-        self.stop_button.configure(state=state)
         self.refresh_doi_button.configure(state=state)
         self.add_doi_button.configure(state=state)
         self.delete_doi_button.configure(state=state)

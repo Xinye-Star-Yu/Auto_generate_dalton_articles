@@ -183,6 +183,25 @@ def load_used_dois():
     return dois
 
 
+def create_next_output_dir(run_date: date | str | None = None) -> Path:
+    """Create and return the next YYYY-MM-DD-N output folder."""
+    if run_date is None:
+        date_part = date.today().isoformat()
+    elif isinstance(run_date, date):
+        date_part = run_date.isoformat()
+    else:
+        date_part = str(run_date)
+
+    n = 1
+    while True:
+        output_dir = BASE_DIR / f"{date_part}-{n}"
+        try:
+            output_dir.mkdir()
+            return output_dir
+        except FileExistsError:
+            n += 1
+
+
 def build_prompt(output_dir: Path, used_dois: set) -> str:
     doi_list = "\n".join(sorted(used_dois))
 
@@ -844,15 +863,7 @@ def validate_outputs(
 
 def main():
     today = date.today().isoformat()  # YYYY-MM-DD
-
-    # Find next available number for today (YYYY-MM-DD-1, YYYY-MM-DD-2, etc.)
-    n = 1
-    while (BASE_DIR / f"{today}-{n}").exists():
-        n += 1
-    output_dir = BASE_DIR / f"{today}-{n}"
-
-    # Create output folder
-    output_dir.mkdir(exist_ok=True)
+    output_dir = create_next_output_dir(today)
     print(f"Output folder: {output_dir}")
 
     # Load used DOIs
