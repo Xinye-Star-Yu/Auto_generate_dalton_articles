@@ -12,6 +12,7 @@ import argparse
 import json
 import platform
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, time, timedelta
@@ -26,10 +27,19 @@ def app_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def resource_base_dir() -> Path:
+    """Directory used for bundled read-only files in a PyInstaller build."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", app_base_dir()))
+    return app_base_dir()
+
+
 BASE_DIR = app_base_dir()
+RESOURCE_DIR = resource_base_dir()
 CONFIG_PATH = BASE_DIR / "scheduler_config.json"
 LOG_PATH = BASE_DIR / "scheduler.log"
 GENERATOR_PATH = BASE_DIR / "generate.py"
+DUP_CSV_PATH = BASE_DIR / "Duplication_Check_Dalton.csv"
 TASK_NAME = "AutoGenerateArticleScheduler"
 CRON_BEGIN = "# BEGIN AutoGenerateArticleScheduler"
 CRON_END = "# END AutoGenerateArticleScheduler"
@@ -48,6 +58,18 @@ DEFAULT_CONFIG = {
 
 
 LogCallback = Callable[[str], None]
+
+
+def ensure_runtime_file(filename: str) -> Path:
+    target = BASE_DIR / filename
+    source = RESOURCE_DIR / filename
+    if not target.exists() and source.exists() and source != target:
+        shutil.copy2(source, target)
+    return target
+
+
+def duplication_csv_path() -> Path:
+    return ensure_runtime_file("Duplication_Check_Dalton.csv")
 
 
 def _now() -> datetime:
