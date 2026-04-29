@@ -17,7 +17,6 @@ from tkinter import messagebox, ttk
 
 from auto_generate_dalton_articles import scheduler as article_scheduler
 
-DEFAULT_RUN_TIME = "09:00"
 LOG_PREVIEW_LINES = 120
 
 
@@ -119,20 +118,30 @@ class SchedulerGui(tk.Tk):
 
     def _load_config(self) -> None:
         config = article_scheduler.load_config()
-        self.interval_var.set(str(config["interval_days"]))
+        interval_days = config.get("interval_days")
+        self.interval_var.set("" if interval_days is None else str(interval_days))
         self.article_count_var.set(str(config.get("articles_per_run", 1)))
-        self._append_log(
-            f"Loaded schedule: {config.get('articles_per_run', 1)} article(s) "
-            f"every {config['interval_days']} day(s)."
-        )
+        if interval_days is None:
+            self._append_log("No repeat schedule loaded. Repeat days is required before starting.")
+        else:
+            self._append_log(
+                f"Loaded schedule: {config.get('articles_per_run', 1)} article(s) "
+                f"every {interval_days} day(s)."
+            )
         self._append_log(f"Last status: {config.get('last_status') or 'Never run'}")
         if config.get("next_run_at"):
-            self._append_log(f"Next run: {config['next_run_at']}")
+            self._append_log(
+                f"Waiting for next run. Next run starts at "
+                f"{article_scheduler.format_log_datetime(config['next_run_at'])}."
+            )
         self._append_recent_log()
 
     def _get_interval_days(self) -> int:
+        value = self.interval_var.get().strip()
+        if not value:
+            raise ValueError("Repeat days is required. Enter 0 for a one-time run.")
         try:
-            interval_days = int(self.interval_var.get())
+            interval_days = int(value)
         except ValueError as exc:
             raise ValueError("Days must be a whole number.") from exc
         if interval_days < 0:
@@ -148,15 +157,6 @@ class SchedulerGui(tk.Tk):
             raise ValueError("Articles must be at least 1.")
         return article_count
 
-    def _run_time(self) -> str:
-        config = article_scheduler.load_config()
-        run_time = str(config.get("run_time") or DEFAULT_RUN_TIME)
-        try:
-            article_scheduler.parse_run_time(run_time)
-        except ValueError:
-            return DEFAULT_RUN_TIME
-        return run_time
-
     def start_schedule(self) -> None:
         try:
             interval_days = self._get_interval_days()
@@ -166,11 +166,9 @@ class SchedulerGui(tk.Tk):
             return
 
         def work() -> None:
-            run_time = self._run_time()
             if interval_days == 0:
                 result = article_scheduler.install_os_schedule(
                     0,
-                    run_time,
                     articles_per_run=article_count,
                 )
                 output = (result.stdout or result.stderr or "").strip()
@@ -183,11 +181,10 @@ class SchedulerGui(tk.Tk):
                 self.log_queue.put(f"One-time run finished with exit code {return_code}.")
                 return
 
-            immediate_run_at = datetime.now().replace(microsecond=0)
+            immediate_run_at = article_scheduler.schedule_reference_time(datetime.now())
             result = article_scheduler.install_os_schedule(
                 interval_days,
-                run_time,
-                immediate_run_at,
+                immediate_run_at=immediate_run_at,
                 articles_per_run=article_count,
             )
             output = (result.stdout or result.stderr or "").strip()
@@ -197,13 +194,16 @@ class SchedulerGui(tk.Tk):
                 f"Running {config['articles_per_run']} article(s) every "
                 f"{config['interval_days']} day(s)."
             )
-            self.log_queue.put(f"Next run: {config['next_run_at']}")
             self.log_queue.put(f"Starting immediate generation for {article_count} article(s).")
             return_code, _ = article_scheduler.run_manual_generation(
                 self.log_queue.put,
                 article_count=article_count,
             )
             self.log_queue.put(f"Immediate run finished with exit code {return_code}.")
+            self.log_queue.put(
+                f"Waiting for next run. Next run starts at "
+                f"{article_scheduler.format_log_datetime(config['next_run_at'])}."
+            )
 
         self._start_worker(work)
 
