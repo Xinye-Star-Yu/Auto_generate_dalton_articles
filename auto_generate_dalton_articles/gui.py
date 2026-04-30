@@ -28,6 +28,7 @@ class SchedulerGui(tk.Tk):
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
+        self._cancel_event = threading.Event()
         self.interval_var = tk.StringVar()
         self.article_count_var = tk.StringVar()
         self.new_doi_var = tk.StringVar()
@@ -38,6 +39,7 @@ class SchedulerGui(tk.Tk):
         self._load_config()
         self._refresh_doi_csv()
         self.after(150, self._drain_log_queue)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -45,7 +47,7 @@ class SchedulerGui(tk.Tk):
 
         controls = ttk.Frame(self)
         controls.grid(row=0, column=0, sticky="ew", padx=12, pady=12)
-        controls.columnconfigure(6, weight=1)
+        controls.columnconfigure(7, weight=1)
 
         ttk.Label(controls, text="Articles").grid(row=0, column=0, sticky="w")
         amount = ttk.Spinbox(controls, from_=1, to=25, textvariable=self.article_count_var, width=8)
@@ -58,6 +60,9 @@ class SchedulerGui(tk.Tk):
 
         self.start_button = ttk.Button(controls, text="Start", command=self.start_schedule)
         self.start_button.grid(row=0, column=5, sticky="ew", padx=(0, 8))
+
+        self.stop_button = ttk.Button(controls, text="Stop Scheduler", command=self.stop_schedule, state="disabled")
+        self.stop_button.grid(row=0, column=6, sticky="w", padx=(0, 8))
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -129,6 +134,7 @@ class SchedulerGui(tk.Tk):
                 f"every {interval_days} day(s)."
             )
         self._append_log(f"Last status: {config.get('last_status') or 'Never run'}")
+        self._update_stop_button()
         if config.get("next_run_at"):
             self._append_log(
                 f"Waiting for next run. Next run starts at "
@@ -165,6 +171,8 @@ class SchedulerGui(tk.Tk):
             messagebox.showerror("Invalid Settings", str(exc))
             return
 
+        self._cancel_event.clear()
+
         def work() -> None:
             if interval_days == 0:
                 result = article_scheduler.install_os_schedule(
@@ -177,6 +185,7 @@ class SchedulerGui(tk.Tk):
                 return_code, _ = article_scheduler.run_manual_generation(
                     self.log_queue.put,
                     article_count=article_count,
+                    cancel_event=self._cancel_event,
                 )
                 self.log_queue.put(f"One-time run finished with exit code {return_code}.")
                 return
@@ -198,14 +207,35 @@ class SchedulerGui(tk.Tk):
             return_code, _ = article_scheduler.run_manual_generation(
                 self.log_queue.put,
                 article_count=article_count,
+                cancel_event=self._cancel_event,
             )
             self.log_queue.put(f"Immediate run finished with exit code {return_code}.")
-            self.log_queue.put(
-                f"Waiting for next run. Next run starts at "
-                f"{article_scheduler.format_log_datetime(config['next_run_at'])}."
-            )
+            if not self._cancel_event.is_set() and config.get("next_run_at"):
+                self.log_queue.put(
+                    f"Waiting for next run. Next run starts at "
+                    f"{article_scheduler.format_log_datetime(config['next_run_at'])}."
+                )
 
         self._start_worker(work)
+
+    def stop_schedule(self) -> None:
+        result = article_scheduler.remove_os_schedule()
+        output = (result.stdout or result.stderr or "").strip()
+        self._append_log(output or "Scheduler removed.")
+        if self._is_worker_running():
+            self._cancel_event.set()
+            self._append_log(
+                "Waiting for the current article to finish, then stopping..."
+            )
+            self.stop_button.configure(state="disabled")
+        else:
+            self._append_log("Recurring schedule has been stopped.")
+            self._update_stop_button()
+
+    def _update_stop_button(self) -> None:
+        config = article_scheduler.load_config()
+        has_schedule = config.get("enabled", False) and config.get("interval_days", 0)
+        self.stop_button.configure(state="normal" if has_schedule else "disabled")
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -213,6 +243,10 @@ class SchedulerGui(tk.Tk):
         self.refresh_doi_button.configure(state=state)
         self.add_doi_button.configure(state=state)
         self.delete_doi_button.configure(state=state)
+        if enabled:
+            self.stop_button.configure(state="normal")
+        elif not self._cancel_event.is_set():
+            self.stop_button.configure(state="normal")
 
     def _start_worker(self, target) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
@@ -232,6 +266,35 @@ class SchedulerGui(tk.Tk):
         self.worker_thread = threading.Thread(target=guarded, daemon=True)
         self.worker_thread.start()
 
+    def _is_worker_running(self) -> bool:
+        return self.worker_thread is not None and self.worker_thread.is_alive()
+
+    def _on_close(self) -> None:
+        if self._is_worker_running():
+            choice = messagebox.askyesnocancel(
+                "Generation In Progress",
+                "An article is currently being generated.\n\n"
+                "Yes = Wait for it to finish, then close\n"
+                "No = Close now (generation will be left running in the background)\n"
+                "Cancel = Go back",
+            )
+            if choice is None:
+                return
+            if choice:
+                self._append_log("Waiting for generation to finish before closing...")
+                self._set_buttons_enabled(False)
+                self._wait_and_close()
+                return
+        self.destroy()
+
+    def _wait_and_close(self) -> None:
+        if self._is_worker_running():
+            self._drain_log_queue()
+            self.after(250, self._wait_and_close)
+        else:
+            self._drain_log_queue()
+            self.destroy()
+
     def _drain_log_queue(self) -> None:
         while True:
             try:
@@ -241,6 +304,7 @@ class SchedulerGui(tk.Tk):
 
             if message == "__DONE__":
                 self._set_buttons_enabled(True)
+                self._update_stop_button()
                 self._refresh_doi_csv()
             else:
                 self._append_log(message)

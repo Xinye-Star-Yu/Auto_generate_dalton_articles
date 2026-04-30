@@ -202,8 +202,21 @@ def create_next_output_dir(run_date: date | str | None = None) -> Path:
             n += 1
 
 
-def build_prompt(output_dir: Path, used_dois: set) -> str:
+def build_prompt(output_dir: Path, used_dois: set, target_doi: str | None = None) -> str:
     doi_list = "\n".join(sorted(used_dois))
+
+    if target_doi:
+        find_article_block = f"""1. USE THE SPECIFIED ARTICLE
+   - You MUST use the article with DOI: {target_doi}
+   - Look up this DOI and retrieve the article details.
+   - The article MUST have: at least one figure and be a real publication.
+   - If you cannot access this article, report the issue clearly."""
+    else:
+        find_article_block = """1. FIND AN ARTICLE
+   - Search PubMed or the web for a real, published scholarly article related to multiomics, metabolomics, proteomics, or transcriptomics.
+   - The article MUST have: a DOI, at least one figure, and be a real publication.
+   - The article's DOI must NOT be in the already-used list above.
+   - If the first article you find doesn't qualify, keep searching until you find one that does."""
 
     return f"""You are generating a scientific summary review article for Dalton Bioanalytics.
 
@@ -221,11 +234,7 @@ ALREADY-USED DOIs (do NOT pick any of these):
 
 STEP-BY-STEP WORKFLOW:
 
-1. FIND AN ARTICLE
-   - Search PubMed or the web for a real, published scholarly article related to multiomics, metabolomics, proteomics, or transcriptomics.
-   - The article MUST have: a DOI, at least one figure, and be a real publication.
-   - The article's DOI must NOT be in the already-used list above.
-   - If the first article you find doesn't qualify, keep searching until you find one that does.
+{find_article_block}
 
 2. READ THE TEMPLATE
    - Read {TEMPLATE_PDF} to see the exact HTML structure, formatting, and layout.
@@ -861,19 +870,73 @@ def validate_outputs(
     return failures
 
 
-def main():
-    today = date.today().isoformat()  # YYYY-MM-DD
+MAX_RETRIES = 3
+
+# Patterns in Claude output that indicate a non-retryable token/context exhaustion.
+_TOKEN_EXHAUSTION_PATTERNS = [
+    "max_tokens",
+    "maximum context length",
+    "context window",
+    "token limit",
+    "conversation is too long",
+    "context length exceeded",
+    "ran out of",
+]
+
+
+def is_token_exhaustion(stdout: str, stderr: str) -> bool:
+    """Detect whether the Claude run failed due to token/context exhaustion."""
+    combined = (stdout + "\n" + stderr).lower()
+    for pattern in _TOKEN_EXHAUSTION_PATTERNS:
+        if pattern in combined:
+            return True
+    # BEGIN without END means output was truncated mid-generation
+    if "---BEGIN_CONTENT---" in stdout and "---END_CONTENT---" not in stdout:
+        return True
+    return False
+
+
+def remove_doi_from_csv(doi: str) -> None:
+    """Remove a DOI from the duplication CSV so it doesn't block future runs."""
+    if not DUP_CSV.exists() or not doi:
+        return
+    with open(DUP_CSV, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        rows = [row for row in reader if row.get("doi_norm", "").strip().lower() != doi.lower()]
+    with open(DUP_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["doi_norm", "date"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def cleanup_failed_attempt(output_dir: Path, selected_doi: str | None) -> None:
+    """Delete the output folder and remove the DOI from CSV after a failed attempt."""
+    if selected_doi:
+        remove_doi_from_csv(selected_doi)
+        print(f"Removed DOI from duplication CSV: {selected_doi}")
+    if output_dir.is_dir():
+        import shutil as _shutil
+        _shutil.rmtree(output_dir, ignore_errors=True)
+        print(f"Deleted failed output folder: {output_dir}")
+
+
+def generate_one(target_doi: str | None = None) -> tuple[bool, bool, Path, str | None]:
+    """Run a single generation attempt.
+
+    Returns (success, retryable, output_dir, selected_doi).
+    """
+    today = date.today().isoformat()
     output_dir = create_next_output_dir(today)
     print(f"Output folder: {output_dir}")
 
-    # Load used DOIs
     used_dois = load_used_dois()
     print(f"Loaded {len(used_dois)} already-used DOIs")
 
-    # Build prompt
-    prompt = build_prompt(output_dir, used_dois)
+    if target_doi:
+        print(f"Target DOI: {target_doi}")
 
-    # Launch Claude
+    prompt = build_prompt(output_dir, used_dois, target_doi=target_doi)
+
     print("Launching Claude Code...\n")
     cmd = [
         "claude",
@@ -894,6 +957,11 @@ def main():
     if result.stderr:
         print("STDERR:", result.stderr, file=sys.stderr)
 
+    # Check for token exhaustion before anything else
+    if is_token_exhaustion(result.stdout, result.stderr):
+        print("\nERROR: Claude ran out of tokens or context. This is not retryable.")
+        return False, False, output_dir, None
+
     # Extract DOI from output
     selected_doi = None
     for line in result.stdout.splitlines():
@@ -901,17 +969,16 @@ def main():
             selected_doi = line.split(":", 1)[1].strip().lower()
             break
 
-    # Hard duplicate check: reject if DOI already exists in the CSV
+    # Hard duplicate check
     if selected_doi and selected_doi in used_dois:
         print(f"\nERROR: DOI {selected_doi} is already in the duplication check CSV. "
               "Claude selected a duplicate article. Not appending.")
-        selected_doi = None  # treat as failure
+        selected_doi = None
 
-    # Append to duplication CSV only after a valid, non-duplicate article
+    # Append to duplication CSV
     if selected_doi:
-        # Ensure file ends with newline before appending
         with open(DUP_CSV, "rb") as f:
-            f.seek(0, 2)  # seek to end
+            f.seek(0, 2)
             if f.tell() > 0:
                 f.seek(-1, 2)
                 if f.read(1) != b"\n":
@@ -924,7 +991,7 @@ def main():
     elif selected_doi is None:
         print("\nWARNING: Could not extract a valid DOI from output. Check results manually.")
 
-    # Create the PDF locally so its layout stays consistent with template_article.pdf.
+    # Create PDF
     content = extract_marked_content(result.stdout)
     if content:
         content = normalize_generated_content(content)
@@ -933,21 +1000,48 @@ def main():
     else:
         print("\nWARNING: Could not extract marked content. PDF was not created locally.")
 
-    # Verify deliverables
+    # List files
     print(f"\nFiles in {output_dir}:")
     for f in sorted(output_dir.iterdir()):
         print(f"  {f.name} ({f.stat().st_size} bytes)")
 
-    # Run validation
+    # Validate
     print("\n--- VALIDATION ---")
     failures = validate_outputs(output_dir, used_dois, result.stdout, content)
     if failures:
         print(f"\n{len(failures)} check(s) failed:")
         for f in failures:
             print(f"  {f}")
-        sys.exit(1)
-    else:
-        print("\nAll checks passed!")
+        return False, True, output_dir, selected_doi
+
+    print("\nAll checks passed!")
+    return True, True, output_dir, selected_doi
+
+
+def main(target_doi: str | None = None):
+    for attempt in range(1, MAX_RETRIES + 1):
+        if attempt > 1:
+            print(f"\n{'='*60}")
+            print(f"RETRY attempt {attempt} of {MAX_RETRIES}")
+            print(f"{'='*60}\n")
+
+        success, retryable, output_dir, selected_doi = generate_one(target_doi=target_doi)
+
+        if success:
+            return
+
+        if not retryable:
+            print("\nNon-retryable failure. Cleaning up and stopping.")
+            cleanup_failed_attempt(output_dir, selected_doi)
+            sys.exit(1)
+
+        if attempt < MAX_RETRIES:
+            print(f"\nAttempt {attempt} failed. Cleaning up and retrying...")
+            cleanup_failed_attempt(output_dir, selected_doi)
+        else:
+            print(f"\nAll {MAX_RETRIES} attempts failed. Cleaning up last attempt...")
+            cleanup_failed_attempt(output_dir, selected_doi)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

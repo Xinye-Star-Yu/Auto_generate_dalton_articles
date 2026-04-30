@@ -18,6 +18,7 @@ import subprocess
 import sys
 from datetime import datetime, time, timedelta
 from pathlib import Path
+from threading import Event
 from typing import Callable, Iterable
 
 
@@ -302,16 +303,26 @@ def run_generation(callback: LogCallback | None = None) -> tuple[int, str | None
 def run_generation_batch(
     article_count: int,
     callback: LogCallback | None = None,
+    cancel_event: Event | None = None,
 ) -> tuple[int, list[str]]:
     count = max(1, int(article_count))
     output_dirs: list[str] = []
     failures = 0
     first_failure_code = 0
+    completed = 0
 
     for index in range(count):
+        if cancel_event and cancel_event.is_set():
+            emit(
+                f"Stopped after {completed}/{count} article(s) "
+                f"({completed - failures} successful).",
+                callback,
+            )
+            return first_failure_code or (1 if failures else 0), output_dirs
         if count > 1:
             emit(f"Starting article {index + 1} of {count}.", callback)
         return_code, output_dir = run_generation(callback)
+        completed += 1
         if output_dir:
             output_dirs.append(output_dir)
         if return_code != 0:
@@ -337,9 +348,12 @@ def batch_status(return_code: int, article_count: int) -> str:
 def run_manual_generation(
     callback: LogCallback | None = None,
     article_count: int = 1,
+    cancel_event: Event | None = None,
 ) -> tuple[int, list[str]]:
     started_at = _now()
-    return_code, output_dirs = run_generation_batch(article_count, callback)
+    return_code, output_dirs = run_generation_batch(
+        article_count, callback, cancel_event=cancel_event,
+    )
     config = load_config()
     config.update(
         {
