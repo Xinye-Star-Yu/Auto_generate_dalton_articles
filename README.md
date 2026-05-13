@@ -1,6 +1,6 @@
 # Auto Generate Dalton Articles
 
-Generate Dalton Bioanalytics scientific summary articles with Claude Code. The app can run once immediately or run immediately and then continue on a recurring day interval.
+WINDOWS ONLY! Generate Dalton Bioanalytics scientific summary articles with Claude Code. The app can run once immediately or run immediately and then continue on a recurring day interval.
 
 ## Quick Setup
 
